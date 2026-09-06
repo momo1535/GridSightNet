@@ -1,0 +1,90 @@
+__include__: [
+  '../dataset/gridsight_substation_hardneg.yml',
+  '../runtime.yml',
+  '../base/dataloader.yml',
+  '../base/optimizer.yml',
+  '../base/gridsight_detector.yml',
+]
+
+output_dir: ./outputs/gridsight_b16_substation_seed3407
+epoches: 10
+# last.pth is refreshed every epoch; periodic archives are kept every 5 epochs.
+checkpoint_freq: 5
+print_freq: 50
+eval_spatial_size: [640, 640]
+
+scaler: {type: GradScaler, enabled: True, init_scale: 128.0}
+lrsheduler: flatcosine
+lr_gamma: 0.5
+warmup_iter: 100
+flat_epoch: 4
+no_aug_epoch: 0
+
+DEIM: {backbone: DINOv3STAs}
+DINOv3STAs:
+  name: dinov3_vitb16
+  weights_path: ./weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+  interaction_indexes: [5, 8, 11]
+  finetune: True
+  conv_inplane: 64
+  hidden_dim: 256
+
+HybridEncoder:
+  in_channels: [256, 256, 256]
+  hidden_dim: 256
+  dim_feedforward: 1024
+  expansion: 1.25
+  depth_mult: 1.37
+
+DEIMTransformer:
+  num_layers: 6
+  eval_idx: -1
+  feat_channels: [256, 256, 256]
+  hidden_dim: 256
+  dim_feedforward: 2048
+
+PostProcessor: {num_top_queries: 10}
+
+optimizer:
+  type: AdamW
+  params:
+    - {params: '^(?=.*.dinov3)(?!.*(?:norm|bn|bias)).*$', lr: 0.000001}
+    - {params: '^(?=.*.dinov3)(?=.*(?:norm|bn|bias)).*$', lr: 0.000001, weight_decay: 0.}
+    - {params: '^(?=.*(?:sta|encoder|decoder))(?=.*(?:norm|bn|bias)).*$', weight_decay: 0.}
+  lr: 0.000025
+  betas: [0.9, 0.999]
+  weight_decay: 0.000125
+
+train_dataloader:
+  total_batch_size: 2
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.3}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [640, 640]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy: ~
+  collate_fn:
+    base_size: 640
+    base_size_repeat: ~
+    stop_epoch: 10
+    mixup_prob: 0.0
+    copyblend_prob: 0.0
+    ema_restart_decay: 0.9999
+
+val_dataloader:
+  total_batch_size: 4
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [640, 640]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+
+DEIMCriterion:
+  matcher: {change_matcher: True, iou_order_alpha: 4.0, matcher_change_epoch: 10}
